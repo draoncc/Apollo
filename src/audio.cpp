@@ -32,9 +32,11 @@ namespace audio {
   int map_stream(int channels, bool quality);
 
   constexpr auto SAMPLE_RATE = 48000;
+  /// Largest audio packet payload the stream can send (see MAX_AUDIO_PACKET_SIZE in stream.cpp)
+  constexpr std::int64_t MAX_PACKET_SIZE = 1400;
 
   // NOTE: If you adjust the bitrates listed here, make sure to update the
-  // corresponding bitrate adjustment logic in rtsp_stream::cmd_announce()
+  // Opus audio estimate in bitrate_kbps()
   opus_stream_config_t stream_configs[MAX_STREAM_CONFIG] {
     {
       SAMPLE_RATE,
@@ -372,5 +374,72 @@ namespace audio {
     stream.streams = params.streams;
     stream.coupledStreams = params.coupledStreams;
     stream.mapping = params.mapping;
+  }
+
+  config_t negotiate(const std::unordered_map<std::string_view, std::string_view> &args, std::optional<std::string_view> host, std::string_view surround_params) {
+    config_t config {};
+    config.channels = util::from_view(args.at("x-nv-audio.surround.numChannels"));
+    config.mask = util::from_view(args.at("x-nv-audio.surround.channelMask"));
+    config.packetDuration = util::from_view(args.at("x-nv-aqos.packetDuration"));
+    config.flags[config_t::HIGH_QUALITY] = util::from_view(args.at("x-nv-audio.surround.AudioQuality"));
+
+    auto codec = args.find("x-apollo-audio.codec");
+    if (codec != std::end(args) && codec->second == "pcm") {
+      // 16-bit samples at 48 kHz: 48 samples per channel per millisecond
+      auto packet_size = (std::int64_t) config.channels * sizeof(std::int16_t) * 48 * config.packetDuration;
+      if (packet_size <= MAX_PACKET_SIZE) {
+        // The Opus-only settings don't apply to PCM audio
+        config.codec = codec_e::pcm;
+        config.flags[config_t::HIGH_QUALITY] = false;
+        return config;
+      }
+
+      BOOST_LOG(error) << "Client requested PCM audio with "sv << config.channels << " channels at "sv
+                       << config.packetDuration << " ms packets ("sv << packet_size << " B, limit is "sv
+                       << MAX_PACKET_SIZE << " B); falling back to Opus audio"sv;
+    }
+
+    // When using stereo audio, the audio quality is (strangely) indicated by whether the Host field
+    // in the RTSP message matches a local interface's IP address. Fortunately, Moonlight always sends
+    // 0.0.0.0 when it wants low quality, so it is easy to check without enumerating interfaces.
+    if (config.channels == 2) {
+      if (host) {
+        BOOST_LOG(debug) << "Found Host: "sv << *host;
+        config.flags[config_t::HIGH_QUALITY] = (host->find("0.0.0.0"sv) == std::string_view::npos);
+      }
+    } else if (surround_params.length() > 3) {
+      // Channels
+      std::uint8_t c = surround_params[0] - '0';
+      // Streams
+      std::uint8_t n = surround_params[1] - '0';
+      // Coupled streams
+      std::uint8_t m = surround_params[2] - '0';
+      auto valid = false;
+      if ((c == 6 || c == 8) && c == config.channels && n + m == c && surround_params.length() == c + 3) {
+        config.customStreamParams.channelCount = c;
+        config.customStreamParams.streams = n;
+        config.customStreamParams.coupledStreams = m;
+        valid = true;
+        for (std::uint8_t i = 0; i < c; i++) {
+          config.customStreamParams.mapping[i] = surround_params[i + 3] - '0';
+          if (config.customStreamParams.mapping[i] >= c) {
+            valid = false;
+            break;
+          }
+        }
+      }
+      config.flags[config_t::CUSTOM_SURROUND_PARAMS] = valid;
+    }
+
+    return config;
+  }
+
+  int bitrate_kbps(const config_t &config) {
+    if (config.codec == codec_e::pcm) {
+      return SAMPLE_RATE * 16 * config.channels / 1000;
+    }
+
+    // Opus audio's per-channel estimate; keep in sync with stream_configs above
+    return (config.flags[config_t::HIGH_QUALITY] ? 256 : 96) * config.channels;
   }
 }  // namespace audio
