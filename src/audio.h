@@ -40,6 +40,14 @@ namespace audio {
 
   extern opus_stream_config_t stream_configs[MAX_STREAM_CONFIG];
 
+  /**
+   * @brief The audio codec a session's audio packets are sent as.
+   */
+  enum class codec_e : int {
+    opus,  ///< Opus audio
+    pcm,  ///< PCM audio: little-endian interleaved int16 at 48 kHz
+  };
+
   struct config_t {
     enum flags_e : int {
       HIGH_QUALITY,  ///< High quality audio
@@ -61,6 +69,10 @@ namespace audio {
     uint64_t __padding;
 
     bool input_only;
+
+    /// The session's audio codec. For PCM audio, the Opus-only settings
+    /// (HIGH_QUALITY, CUSTOM_SURROUND_PARAMS) are ignored.
+    codec_e codec = codec_e::opus;
   };
 
   struct audio_ctx_t {

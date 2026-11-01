@@ -3,6 +3,9 @@
  * @brief Definitions for audio capture and encoding.
  */
 // standard includes
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <thread>
 
 // lib includes
@@ -83,15 +86,60 @@ namespace audio {
     },
   };
 
-  void encodeThread(sample_queue_t samples, config_t config, void *channel_data) {
-    auto packets = mail::man->queue<packet_t>(mail::audio_packets);
+  /**
+   * @brief Get the stream config for a session's audio config.
+   * The Opus-only settings are ignored for PCM audio.
+   */
+  static opus_stream_config_t stream_config(const config_t &config) {
+    if (config.codec == codec_e::pcm) {
+      return stream_configs[map_stream(config.channels, false)];
+    }
+
     auto stream = stream_configs[map_stream(config.channels, config.flags[config_t::HIGH_QUALITY])];
     if (config.flags[config_t::CUSTOM_SURROUND_PARAMS]) {
       apply_surround_params(stream, config.customStreamParams);
     }
+    return stream;
+  }
+
+  /**
+   * @brief Convert a float sample to int16 by scaling, rounding and clamping (no dither).
+   */
+  static std::int16_t float_to_int16(float sample) {
+    // Same scale as Opus' own float-to-int16 conversion: [-1, 1) maps onto the full int16 range
+    const auto scaled = std::lround(sample * 32768.0f);
+    return static_cast<std::int16_t>(std::clamp<long>(scaled, INT16_MIN, INT16_MAX));
+  }
+
+  static void encodePcm(const sample_queue_t &samples, const safe::mail_raw_t::queue_t<packet_t> &packets, void *channel_data) {
+    while (auto sample = samples->pop()) {
+      buffer_t packet {sample->size() * sizeof(std::int16_t)};
+
+      auto out = std::begin(packet);
+      for (const auto value : *sample) {
+        const auto pcm = static_cast<std::uint16_t>(float_to_int16(value));
+        *out++ = static_cast<std::uint8_t>(pcm & 0xFF);
+        *out++ = static_cast<std::uint8_t>(pcm >> 8);
+      }
+
+      packets->raise(channel_data, std::move(packet));
+    }
+  }
+
+  void encodeThread(sample_queue_t samples, config_t config, void *channel_data) {
+    auto packets = mail::man->queue<packet_t>(mail::audio_packets);
+    auto stream = stream_config(config);
 
     // Encoding takes place on this thread
     platf::adjust_thread_priority(platf::thread_priority_e::high);
+
+    if (config.codec == codec_e::pcm) {
+      BOOST_LOG(info) << "PCM audio: "sv << stream.sampleRate / 1000 << " kHz, "sv
+                      << stream.channelCount << " channels, "sv
+                      << config.packetDuration << " ms packets"sv;
+      encodePcm(samples, packets, channel_data);
+      return;
+    }
 
     opus_t opus {opus_multistream_encoder_create(
       stream.sampleRate,
@@ -133,10 +181,7 @@ namespace audio {
       shutdown_event->view();
       return;
     }
-    auto stream = stream_configs[map_stream(config.channels, config.flags[config_t::HIGH_QUALITY])];
-    if (config.flags[config_t::CUSTOM_SURROUND_PARAMS]) {
-      apply_surround_params(stream, config.customStreamParams);
-    }
+    auto stream = stream_config(config);
 
     auto ref = get_audio_ctx_ref();
     if (!ref) {
