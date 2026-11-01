@@ -13,6 +13,7 @@
 #include <optional>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace audio {
   enum stream_config_e : int {
@@ -106,8 +107,21 @@ namespace audio {
     platf::sink_t sink;
   };
 
+  /// Largest audio packet payload the stream can send, in bytes
+  constexpr std::size_t MAX_AUDIO_PACKET_SIZE = 1400;
+
   using buffer_t = util::buffer_t<std::uint8_t>;
   using packet_t = std::pair<void *, buffer_t>;
+
+  /**
+   * @brief Convert one packet's worth of captured float samples into a PCM audio packet payload.
+   * Each sample is scaled by 32768, rounded to nearest and clamped to the int16 range (no dither),
+   * then written as little-endian int16, keeping the samples' interleaved order.
+   * @param samples Interleaved float samples, nominally in [-1.0, 1.0].
+   * @return Two bytes per sample.
+   */
+  buffer_t pcm_payload(const std::vector<float> &samples);
+
   using audio_ctx_ref_t = safe::shared_t<audio_ctx_t>::ptr_t;
 
   void capture(safe::mail_t mail, config_t config, void *channel_data);

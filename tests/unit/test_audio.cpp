@@ -72,6 +72,7 @@ TEST_P(AudioTest, TestEncode) {
         FAIL() << "Empty packet data";
       }
       if (m_config.codec == codec_e::pcm) {
+        // Captured audio is no known signal, so only the size is checked here; PcmPayloadTest checks the samples' bytes.
         // channels x 2 B x 48 x packet duration: stereo 5 ms = 960 B, 5.1 2 ms = 1152 B, 7.1 1 ms = 768 B
         const std::size_t expected_size = m_config.channels == 2 ? 960 : m_config.channels == 6 ? 1152 : 768;
         ASSERT_EQ(packet_data.size(), expected_size);
@@ -88,4 +89,33 @@ TEST_P(AudioTest, TestEncode) {
     // Capture only produces packets while audio is flowing through the sink
     GTEST_SKIP() << "No audio was captured on this host, so no PCM audio packets could be checked";
   }
+}
+
+namespace {
+  /// The payload's bytes, for comparing against literal byte sequences independent of host endianness
+  std::vector<std::uint8_t> bytes_of(const buffer_t &payload) {
+    return {std::begin(payload), std::end(payload)};
+  }
+}  // namespace
+
+TEST(PcmPayloadTest, SamplesAreLittleEndianInt16InOrder) {
+  // 4660 = 0x1234 and -4660 = 0xEDCC, as exact fractions of 32768
+  auto payload = pcm_payload({4660.0f / 32768, -4660.0f / 32768, 0.0f});
+
+  EXPECT_EQ(bytes_of(payload), (std::vector<std::uint8_t> {0x34, 0x12, 0xCC, 0xED, 0x00, 0x00}));
+}
+
+TEST(PcmPayloadTest, SamplesRoundToNearestWithHalvesAwayFromZero) {
+  // 1.4, 1.5, -1.5, -0.4 and 0.5 steps of 1/32768
+  auto payload = pcm_payload({1.4f / 32768, 1.5f / 32768, -1.5f / 32768, -0.4f / 32768, 0.5f / 32768});
+
+  // 1, 2, -2, 0, 1
+  EXPECT_EQ(bytes_of(payload), (std::vector<std::uint8_t> {0x01, 0x00, 0x02, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x01, 0x00}));
+}
+
+TEST(PcmPayloadTest, FullScaleAndBeyondClampToInt16Range) {
+  auto payload = pcm_payload({1.0f, -1.0f, 1.5f, -1.5f, 1000.0f, -1000.0f, 32767.0f / 32768, -32767.0f / 32768});
+
+  // 32767, -32768, 32767, -32768, 32767, -32768, 32767, -32767
+  EXPECT_EQ(bytes_of(payload), (std::vector<std::uint8_t> {0xFF, 0x7F, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x80, 0xFF, 0x7F, 0x01, 0x80}));
 }
