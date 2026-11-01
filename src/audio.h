@@ -10,6 +10,9 @@
 #include "utility.h"
 
 #include <bitset>
+#include <optional>
+#include <string_view>
+#include <unordered_map>
 
 namespace audio {
   enum stream_config_e : int {
@@ -74,6 +77,24 @@ namespace audio {
     /// (HIGH_QUALITY, CUSTOM_SURROUND_PARAMS) are ignored.
     codec_e codec = codec_e::opus;
   };
+
+  /**
+   * @brief Negotiate the session's audio config from the client's ANNOUNCE.
+   * @param args The ANNOUNCE `a=` attributes, by name.
+   * @param host The ANNOUNCE `Host` header, if the client sent one.
+   *             For stereo it selects high quality Opus audio unless it is 0.0.0.0.
+   * @param surround_params The session's own Opus surround params (may be empty).
+   * @return The audio codec, channel layout, packet duration and Opus settings.
+   *         `HOST_AUDIO` and `input_only` are left for the caller to set.
+   * @throws std::out_of_range if a required audio attribute is missing.
+   */
+  config_t negotiate(const std::unordered_map<std::string_view, std::string_view> &args, std::optional<std::string_view> host, std::string_view surround_params);
+
+  /**
+   * @brief The bandwidth a session's audio uses, for reserving it out of the video bitrate.
+   * @return PCM audio's actual bitrate, or the per-channel Opus estimate (256 kbps high quality, 96 kbps otherwise).
+   */
+  int bitrate_kbps(const config_t &config);
 
   struct audio_ctx_t {
     // We want to change the sink for the first stream only
