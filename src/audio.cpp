@@ -32,8 +32,6 @@ namespace audio {
   int map_stream(int channels, bool quality);
 
   constexpr auto SAMPLE_RATE = 48000;
-  /// Largest audio packet payload the stream can send (see MAX_AUDIO_PACKET_SIZE in stream.cpp)
-  constexpr std::int64_t MAX_PACKET_SIZE = 1400;
 
   // NOTE: If you adjust the bitrates listed here, make sure to update the
   // Opus audio estimate in bitrate_kbps()
@@ -105,6 +103,14 @@ namespace audio {
   }
 
   /**
+   * @brief The bytes in one PCM audio packet's payload: 16-bit samples at 48 kHz,
+   *        so 2 bytes x 48 samples per channel per millisecond.
+   */
+  static std::size_t pcm_payload_bytes(int channels, int packetDuration) {
+    return (std::size_t) channels * sizeof(std::int16_t) * (SAMPLE_RATE / 1000) * packetDuration;
+  }
+
+  /**
    * @brief Convert a float sample to int16 by scaling, rounding and clamping (no dither).
    */
   static std::int16_t float_to_int16(float sample) {
@@ -113,18 +119,22 @@ namespace audio {
     return static_cast<std::int16_t>(std::clamp<long>(scaled, INT16_MIN, INT16_MAX));
   }
 
+  buffer_t pcm_payload(const std::vector<float> &samples) {
+    buffer_t payload {samples.size() * sizeof(std::int16_t)};
+
+    auto out = std::begin(payload);
+    for (const auto value : samples) {
+      const auto pcm = static_cast<std::uint16_t>(float_to_int16(value));
+      *out++ = static_cast<std::uint8_t>(pcm & 0xFF);
+      *out++ = static_cast<std::uint8_t>(pcm >> 8);
+    }
+
+    return payload;
+  }
+
   static void encodePcm(const sample_queue_t &samples, const safe::mail_raw_t::queue_t<packet_t> &packets, void *channel_data) {
     while (auto sample = samples->pop()) {
-      buffer_t packet {sample->size() * sizeof(std::int16_t)};
-
-      auto out = std::begin(packet);
-      for (const auto value : *sample) {
-        const auto pcm = static_cast<std::uint16_t>(float_to_int16(value));
-        *out++ = static_cast<std::uint8_t>(pcm & 0xFF);
-        *out++ = static_cast<std::uint8_t>(pcm >> 8);
-      }
-
-      packets->raise(channel_data, std::move(packet));
+      packets->raise(channel_data, pcm_payload(*sample));
     }
   }
 
@@ -385,9 +395,8 @@ namespace audio {
 
     auto codec = args.find("x-apollo-audio.codec");
     if (codec != std::end(args) && codec->second == "pcm") {
-      // 16-bit samples at 48 kHz: 48 samples per channel per millisecond
-      auto packet_size = (std::int64_t) config.channels * sizeof(std::int16_t) * 48 * config.packetDuration;
-      if (packet_size <= MAX_PACKET_SIZE) {
+      const auto payload_bytes = pcm_payload_bytes(config.channels, config.packetDuration);
+      if (payload_bytes <= MAX_AUDIO_PACKET_SIZE) {
         // The Opus-only settings don't apply to PCM audio
         config.codec = codec_e::pcm;
         config.flags[config_t::HIGH_QUALITY] = false;
@@ -395,8 +404,8 @@ namespace audio {
       }
 
       BOOST_LOG(error) << "Client requested PCM audio with "sv << config.channels << " channels at "sv
-                       << config.packetDuration << " ms packets ("sv << packet_size << " B, limit is "sv
-                       << MAX_PACKET_SIZE << " B); falling back to Opus audio"sv;
+                       << config.packetDuration << " ms packets ("sv << payload_bytes << " B, limit is "sv
+                       << MAX_AUDIO_PACKET_SIZE << " B); falling back to Opus audio"sv;
     }
 
     // When using stereo audio, the audio quality is (strangely) indicated by whether the Host field
@@ -436,7 +445,8 @@ namespace audio {
 
   int bitrate_kbps(const config_t &config) {
     if (config.codec == codec_e::pcm) {
-      return SAMPLE_RATE * 16 * config.channels / 1000;
+      // Bytes per millisecond x 8 bits = kbps
+      return static_cast<int>(pcm_payload_bytes(config.channels, 1) * 8);
     }
 
     // Opus audio's per-channel estimate; keep in sync with stream_configs above
