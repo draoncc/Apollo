@@ -26,8 +26,6 @@ namespace {
 struct layout_t {
   std::string_view channels;
   std::string_view mask;
-  std::string_view pcmPacketDuration;  ///< the packet duration the client sets for PCM audio
-  std::string_view oversizePacketDuration;  ///< a packet duration whose PCM packet exceeds 1400 B
   int expectedChannels;
   int expectedMask;
 };
@@ -38,44 +36,43 @@ INSTANTIATE_TEST_SUITE_P(
   ChannelLayouts,
   AudioNegotiationLayoutTest,
   testing::Values(
-    // stereo 5 ms = 960 B; 10 ms = 1920 B
-    layout_t {"2"sv, "3"sv, "5"sv, "10"sv, 2, 0x3},
-    // 5.1 2 ms = 1152 B; 5 ms = 2880 B
-    layout_t {"6"sv, "63"sv, "2"sv, "5"sv, 6, 0x3F},
-    // 7.1 1 ms = 768 B; 2 ms = 1536 B
-    layout_t {"8"sv, "1599"sv, "1"sv, "2"sv, 8, 0x63F}
+    layout_t {"2"sv, "3"sv, 2, 0x3},
+    layout_t {"6"sv, "63"sv, 6, 0x3F},
+    layout_t {"8"sv, "1599"sv, 8, 0x63F}
   ),
   [](const auto &info) {
     return "Channels" + std::string {info.param.channels};
   }
 );
 
-TEST_P(AudioNegotiationLayoutTest, PcmAtLayoutPacketDurationGivesPcmAudio) {
+TEST_P(AudioNegotiationLayoutTest, PcmAcceptGivesPcmAudioIn5msPackets) {
   auto layout = GetParam();
-  auto args = announce(layout.channels, layout.mask, layout.pcmPacketDuration);
-  args.emplace("x-apollo-audio.codec"sv, "pcm"sv);
+  auto args = announce(layout.channels, layout.mask, "5"sv);
+  args.emplace("x-ss-audio-codec-accept"sv, "PCM"sv);
 
   auto config = negotiate(args, std::nullopt, ""sv);
 
   EXPECT_EQ(config.codec, codec_e::pcm);
   EXPECT_EQ(config.channels, layout.expectedChannels);
   EXPECT_EQ(config.mask, layout.expectedMask);
-  EXPECT_EQ(config.packetDuration, util::from_view(layout.pcmPacketDuration));
+  EXPECT_EQ(config.packetDuration, 5);
 }
 
-TEST_P(AudioNegotiationLayoutTest, PcmWhosePacketExceeds1400BytesGivesOpusAudio) {
+TEST_P(AudioNegotiationLayoutTest, PcmAcceptOverridesClientPacketDurationTo5ms) {
   auto layout = GetParam();
-  auto args = announce(layout.channels, layout.mask, layout.oversizePacketDuration);
-  args.emplace("x-apollo-audio.codec"sv, "pcm"sv);
+  // 1 and 2 ms are the shortened durations earlier Artemis builds sent for PCM surround audio
+  for (auto packetDuration : {"1"sv, "2"sv, "10"sv, "20"sv}) {
+    auto args = announce(layout.channels, layout.mask, packetDuration);
+    args.emplace("x-ss-audio-codec-accept"sv, "PCM"sv);
 
-  auto config = negotiate(args, std::nullopt, ""sv);
+    auto config = negotiate(args, std::nullopt, ""sv);
 
-  EXPECT_EQ(config.codec, codec_e::opus);
-  EXPECT_EQ(config.channels, layout.expectedChannels);
-  EXPECT_EQ(config.packetDuration, util::from_view(layout.oversizePacketDuration));
+    EXPECT_EQ(config.codec, codec_e::pcm) << "x-nv-aqos.packetDuration:" << packetDuration;
+    EXPECT_EQ(config.packetDuration, 5) << "x-nv-aqos.packetDuration:" << packetDuration;
+  }
 }
 
-TEST_P(AudioNegotiationLayoutTest, MissingCodecAttributeGivesOpusAudio) {
+TEST_P(AudioNegotiationLayoutTest, MissingAcceptGivesOpusAudio) {
   auto layout = GetParam();
   auto args = announce(layout.channels, layout.mask, "5"sv);
 
@@ -87,13 +84,20 @@ TEST_P(AudioNegotiationLayoutTest, MissingCodecAttributeGivesOpusAudio) {
   EXPECT_EQ(config.packetDuration, 5);
 }
 
-TEST(AudioNegotiationTest, UnrecognizedCodecGivesOpusAudio) {
-  for (auto value : {"flac"sv, "PCM"sv, ""sv, "opus"sv}) {
+TEST(AudioNegotiationTest, UnrecognizedAcceptGivesOpusAudio) {
+  for (auto value : {"pcm"sv, "Pcm"sv, "Opus"sv, "AC3"sv, "EAC3"sv, ""sv}) {
     auto args = announce("2"sv, "3"sv, "5"sv);
-    args.emplace("x-apollo-audio.codec"sv, value);
+    args.emplace("x-ss-audio-codec-accept"sv, value);
 
-    EXPECT_EQ(negotiate(args, std::nullopt, ""sv).codec, codec_e::opus) << "x-apollo-audio.codec:" << value;
+    EXPECT_EQ(negotiate(args, std::nullopt, ""sv).codec, codec_e::opus) << "x-ss-audio-codec-accept:" << value;
   }
+}
+
+TEST(AudioNegotiationTest, RemovedApolloCodecAttributeGivesOpusAudio) {
+  auto args = announce("2"sv, "3"sv, "5"sv);
+  args.emplace("x-apollo-audio.codec"sv, "pcm"sv);
+
+  EXPECT_EQ(negotiate(args, std::nullopt, ""sv).codec, codec_e::opus);
 }
 
 TEST(AudioNegotiationTest, OpusAudioQualityAttributeSetsHighQuality) {
@@ -134,7 +138,7 @@ TEST(AudioNegotiationTest, OpusSurroundIgnoresInvalidSurroundParams) {
 TEST(AudioNegotiationTest, PcmStereoIgnoresHighQuality) {
   auto args = announce("2"sv, "3"sv, "5"sv);
   args.insert_or_assign("x-nv-audio.surround.AudioQuality"sv, "1"sv);
-  args.emplace("x-apollo-audio.codec"sv, "pcm"sv);
+  args.emplace("x-ss-audio-codec-accept"sv, "PCM"sv);
 
   auto config = negotiate(args, "192.168.1.10"sv, ""sv);
 
@@ -143,9 +147,9 @@ TEST(AudioNegotiationTest, PcmStereoIgnoresHighQuality) {
 }
 
 TEST(AudioNegotiationTest, PcmSurroundIgnoresHighQualityAndSurroundParams) {
-  auto args = announce("6"sv, "63"sv, "2"sv);
+  auto args = announce("6"sv, "63"sv, "5"sv);
   args.insert_or_assign("x-nv-audio.surround.AudioQuality"sv, "1"sv);
-  args.emplace("x-apollo-audio.codec"sv, "pcm"sv);
+  args.emplace("x-ss-audio-codec-accept"sv, "PCM"sv);
 
   auto config = negotiate(args, std::nullopt, "642041523"sv);
 
@@ -154,11 +158,11 @@ TEST(AudioNegotiationTest, PcmSurroundIgnoresHighQualityAndSurroundParams) {
   EXPECT_FALSE(config.flags[config_t::CUSTOM_SURROUND_PARAMS]);
 }
 
-TEST(AudioNegotiationTest, PcmFallbackToOpusKeepsOpusSettings) {
-  // 5.1 at 5 ms would be 2880 B, so this session gets Opus audio with its usual settings
+TEST(AudioNegotiationTest, UnrecognizedAcceptKeepsOpusSettings) {
+  // The accept is matched case-sensitively, so this session gets Opus audio with its usual settings
   auto args = announce("6"sv, "63"sv, "5"sv);
   args.insert_or_assign("x-nv-audio.surround.AudioQuality"sv, "1"sv);
-  args.emplace("x-apollo-audio.codec"sv, "pcm"sv);
+  args.emplace("x-ss-audio-codec-accept"sv, "pcm"sv);
 
   auto config = negotiate(args, std::nullopt, "642041523"sv);
 
@@ -175,13 +179,13 @@ TEST(AudioNegotiationTest, MissingRequiredAttributeThrows) {
 }
 
 TEST(AudioNegotiationTest, PcmBitrateIs16BitAt48kHzPerChannel) {
-  for (auto [channels, mask, packetDuration, kbps] : {
-         std::tuple {"2"sv, "3"sv, "5"sv, 1536},
-         std::tuple {"6"sv, "63"sv, "2"sv, 4608},
-         std::tuple {"8"sv, "1599"sv, "1"sv, 6144},
+  for (auto [channels, mask, kbps] : {
+         std::tuple {"2"sv, "3"sv, 1536},
+         std::tuple {"6"sv, "63"sv, 4608},
+         std::tuple {"8"sv, "1599"sv, 6144},
        }) {
-    auto args = announce(channels, mask, packetDuration);
-    args.emplace("x-apollo-audio.codec"sv, "pcm"sv);
+    auto args = announce(channels, mask, "5"sv);
+    args.emplace("x-ss-audio-codec-accept"sv, "PCM"sv);
 
     EXPECT_EQ(bitrate_kbps(negotiate(args, std::nullopt, ""sv)), kbps) << channels << " channels";
   }
@@ -193,4 +197,12 @@ TEST(AudioNegotiationTest, OpusBitrateEstimateIsUnchanged) {
 
   args.insert_or_assign("x-nv-audio.surround.AudioQuality"sv, "1"sv);
   EXPECT_EQ(bitrate_kbps(negotiate(args, std::nullopt, ""sv)), 256 * 6);
+}
+
+TEST(AudioNegotiationTest, NegotiatedCodecIsReportedByName) {
+  auto args = announce("8"sv, "1599"sv, "5"sv);
+  EXPECT_EQ(codec_name(negotiate(args, std::nullopt, ""sv).codec), "Opus"sv);
+
+  args.emplace("x-ss-audio-codec-accept"sv, "PCM"sv);
+  EXPECT_EQ(codec_name(negotiate(args, std::nullopt, ""sv).codec), "PCM"sv);
 }

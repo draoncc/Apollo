@@ -41,8 +41,8 @@ INSTANTIATE_TEST_SUITE_P(
     std::make_tuple("SURROUND71", config_t {5, 8, 0x63F, {0}, config_flags()}),
     std::make_tuple("SURROUND51_CUSTOM", config_t {5, 6, 0x3F, {6, 4, 2, {0, 1, 4, 5, 2, 3}}, config_flags(config_t::CUSTOM_SURROUND_PARAMS)}),
     std::make_tuple("PCM_STEREO", pcm_config(5, 2, 0x3)),
-    std::make_tuple("PCM_SURROUND51", pcm_config(2, 6, 0x3F)),
-    std::make_tuple("PCM_SURROUND71", pcm_config(1, 8, 0x63F))
+    std::make_tuple("PCM_SURROUND51", pcm_config(5, 6, 0x3F)),
+    std::make_tuple("PCM_SURROUND71", pcm_config(5, 8, 0x63F))
   ),
   [](const auto &info) {
     return std::string(std::get<0>(info.param));
@@ -73,8 +73,8 @@ TEST_P(AudioTest, TestEncode) {
       }
       if (m_config.codec == codec_e::pcm) {
         // Captured audio is no known signal, so only the size is checked here; PcmPayloadTest checks the samples' bytes.
-        // channels x 2 B x 48 x packet duration: stereo 5 ms = 960 B, 5.1 2 ms = 1152 B, 7.1 1 ms = 768 B
-        const std::size_t expected_size = m_config.channels == 2 ? 960 : m_config.channels == 6 ? 1152 : 768;
+        // channels x 2 B x 48 x 5 ms: stereo 960 B, 5.1 2880 B, 7.1 3840 B
+        const std::size_t expected_size = m_config.channels == 2 ? 960 : m_config.channels == 6 ? 2880 : 3840;
         ASSERT_EQ(packet_data.size(), expected_size);
         ++pcm_packets;
       }

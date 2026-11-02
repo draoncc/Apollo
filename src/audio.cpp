@@ -386,6 +386,10 @@ namespace audio {
     stream.mapping = params.mapping;
   }
 
+  std::string_view codec_name(codec_e codec) {
+    return codec == codec_e::pcm ? "PCM"sv : "Opus"sv;
+  }
+
   config_t negotiate(const std::unordered_map<std::string_view, std::string_view> &args, std::optional<std::string_view> host, std::string_view surround_params) {
     config_t config {};
     config.channels = util::from_view(args.at("x-nv-audio.surround.numChannels"));
@@ -393,19 +397,14 @@ namespace audio {
     config.packetDuration = util::from_view(args.at("x-nv-aqos.packetDuration"));
     config.flags[config_t::HIGH_QUALITY] = util::from_view(args.at("x-nv-audio.surround.AudioQuality"));
 
-    auto codec = args.find("x-apollo-audio.codec");
-    if (codec != std::end(args) && codec->second == "pcm") {
-      const auto payload_bytes = pcm_payload_bytes(config.channels, config.packetDuration);
-      if (payload_bytes <= MAX_AUDIO_PACKET_SIZE) {
-        // The Opus-only settings don't apply to PCM audio
-        config.codec = codec_e::pcm;
-        config.flags[config_t::HIGH_QUALITY] = false;
-        return config;
-      }
-
-      BOOST_LOG(error) << "Client requested PCM audio with "sv << config.channels << " channels at "sv
-                       << config.packetDuration << " ms packets ("sv << payload_bytes << " B, limit is "sv
-                       << MAX_AUDIO_PACKET_SIZE << " B); falling back to Opus audio"sv;
+    // The host offers only PCM audio, so the client either accepts it by its exact name or gets Opus audio
+    auto accept = args.find("x-ss-audio-codec-accept"sv);
+    if (accept != std::end(args) && accept->second == codec_name(codec_e::pcm)) {
+      // The host fixes PCM audio's packet duration whatever the client sent, and the Opus-only settings don't apply
+      config.codec = codec_e::pcm;
+      config.packetDuration = PCM_PACKET_DURATION;
+      config.flags[config_t::HIGH_QUALITY] = false;
+      return config;
     }
 
     // When using stereo audio, the audio quality is (strangely) indicated by whether the Host field
