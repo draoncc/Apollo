@@ -822,8 +822,8 @@ namespace rtsp_stream {
       ss << "a=rtpmap:98 AV1/90000"sv << std::endl;
     }
 
-    // Apollo offers PCM audio in every session; the client chooses it in ANNOUNCE
-    ss << "a=x-apollo-audio.codecs:opus,pcm"sv << std::endl;
+    // Apollo offers PCM audio in every session; the client accepts it in ANNOUNCE with x-ss-audio-codec-accept
+    ss << "a=x-ss-audio-codec-offer:"sv << audio::codec_name(audio::codec_e::pcm) << std::endl;
 
     if (!session.surround_params.empty()) {
       // If we have our own surround parameters, advertise them twice first
@@ -1134,6 +1134,13 @@ namespace rtsp_stream {
       respond(sock, session, &option, 500, "Internal Server Error", req->sequenceNumber, {});
       return;
     }
+
+    // Report the session's audio codec, as Vibepollo does
+    OPTION_ITEM audio_codec_option {};
+    std::string audio_codec {audio::codec_name(config.audio.codec)};
+    audio_codec_option.option = const_cast<char *>("X-SS-Audio-Codec");
+    audio_codec_option.content = audio_codec.data();
+    option.next = &audio_codec_option;
 
     respond(sock, session, &option, 200, "OK", req->sequenceNumber, {});
   }

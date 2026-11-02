@@ -2181,7 +2181,8 @@ namespace stream {
         session->video.gcm_iv_counter = 0;
       }
 
-      constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(2048);
+      // Each audio packet is encrypted or copied whole into its shard
+      constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(audio::MAX_AUDIO_PACKET_SIZE);
 
       util::buffer_t<char> shards {RTPA_TOTAL_SHARDS * max_block_size};
       util::buffer_t<uint8_t *> shards_p {RTPA_TOTAL_SHARDS};

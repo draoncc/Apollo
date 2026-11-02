@@ -52,6 +52,16 @@ namespace audio {
     pcm,  ///< PCM audio: little-endian interleaved int16 at 48 kHz
   };
 
+  /// PCM audio's packet duration in milliseconds, fixed by the host whatever the client sent
+  constexpr int PCM_PACKET_DURATION = 5;
+
+  /**
+   * @brief The audio codec's name as it appears in `x-ss-audio-codec-offer`, `x-ss-audio-codec-accept`
+   *        and the ANNOUNCE reply's `X-SS-Audio-Codec` header.
+   * @return "Opus" or "PCM".
+   */
+  std::string_view codec_name(codec_e codec);
+
   struct config_t {
     enum flags_e : int {
       HIGH_QUALITY,  ///< High quality audio
@@ -81,6 +91,8 @@ namespace audio {
 
   /**
    * @brief Negotiate the session's audio config from the client's ANNOUNCE.
+   * `x-ss-audio-codec-accept:PCM` (matched exactly) gives PCM audio in 5 ms packets, whatever packet duration
+   * the client sent; a missing or unrecognized accept gives Opus audio.
    * @param args The ANNOUNCE `a=` attributes, by name.
    * @param host The ANNOUNCE `Host` header, if the client sent one.
    *             For stereo it selects high quality Opus audio unless it is 0.0.0.0.
@@ -107,8 +119,9 @@ namespace audio {
     platf::sink_t sink;
   };
 
-  /// Largest audio packet payload the stream can send, in bytes
-  constexpr std::size_t MAX_AUDIO_PACKET_SIZE = 1400;
+  /// Largest audio packet payload the stream can send, in bytes (matches Vibepollo's).
+  /// PCM audio's 5.1 and 7.1 packets (2880 B and 3840 B) exceed one datagram and rely on IP fragmentation.
+  constexpr std::size_t MAX_AUDIO_PACKET_SIZE = 4096;
 
   using buffer_t = util::buffer_t<std::uint8_t>;
   using packet_t = std::pair<void *, buffer_t>;
